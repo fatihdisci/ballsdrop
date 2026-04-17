@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output and temp files
+*.mp4
+frames_tmp/
+out.txt
+test_out.txt
+test2.txt
+.claude/
+
+# Virtual environment
+venv/
+env/
+ENV/
