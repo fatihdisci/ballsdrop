@@ -302,6 +302,56 @@ class AudioRenderer:
 # ============================================================
 # DRAWING HELPERS
 # ============================================================
+_ball_cache = {}
+
+def get_hd_ball_sprite(radius: float, color: Tuple) -> pygame.Surface:
+    """Returns a highly detailed, antialiased 3D ball sprite using supersampling."""
+    r_key = round(radius, 1)
+    key = (r_key, color)
+    if key in _ball_cache:
+        return _ball_cache[key]
+        
+    scale = 4
+    r_big = int(radius * scale)
+    size = r_big * 2
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    
+    # Base radial gradient for 3D sphere effect
+    for i in range(r_big, 0, -1):
+        t = i / r_big
+        # Light comes from top-left
+        offset = (1.0 - t) * r_big * 0.35
+        cx = r_big - offset
+        cy = r_big - offset
+        
+        # Color from edge (darker) to center (brighter)
+        dark_factor = 0.4 + 0.8 * (1.0 - t)
+        r = max(0, min(255, int(color[0] * dark_factor)))
+        g = max(0, min(255, int(color[1] * dark_factor)))
+        b = max(0, min(255, int(color[2] * dark_factor)))
+        
+        pygame.gfxdraw.filled_circle(surf, int(cx), int(cy), i, (r, g, b, 255))
+        pygame.gfxdraw.aacircle(surf, int(cx), int(cy), i, (r, g, b, 255))
+
+    # Specular highlight (glossy reflection)
+    hl_r = int(r_big * 0.25)
+    hl_x = int(r_big - r_big * 0.4)
+    hl_y = int(r_big - r_big * 0.4)
+    hl_surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    for i in range(hl_r, 0, -1):
+        t = i / hl_r
+        alpha = int((1.0 - t) * 150)
+        pygame.gfxdraw.filled_circle(hl_surf, hl_x, hl_y, i, (255, 255, 255, alpha))
+        
+    surf.blit(hl_surf, (0, 0))
+    
+    # Scale down smoothly for perfect AA
+    r_int = int(radius)
+    final_surf = pygame.transform.smoothscale(surf, (r_int * 2, r_int * 2))
+    _ball_cache[key] = final_surf
+    return final_surf
+
+
 def draw_smooth_path(surface: pygame.Surface, points: List[Tuple[float, float]],
                      color: Tuple, width: int, offset_x: float = 0, offset_y: float = 0):
     """Quadratic bezier smooth path."""
@@ -330,31 +380,52 @@ def draw_smooth_path(surface: pygame.Surface, points: List[Tuple[float, float]],
         pygame.draw.lines(surface, color, False, draw_pts, width)
 
 
-def draw_bowl(surface: pygame.Surface, points: List[Tuple[float, float]],
-              bowl_color: Tuple, bowl_stroke: Tuple):
-    """Üç katman: gölge, ana metalik çizgi, highlight."""
-    # Shadow
-    draw_smooth_path(surface, points, (0, 0, 0, 120), 16, 4, 4)
-    # Main
-    draw_smooth_path(surface, points, bowl_color, 12)
-    # Highlight
-    draw_smooth_path(surface, points, (*bowl_stroke, 180), 2, 0, -3)
+def create_hd_bowl_overlay(W: int, H: int, points: List[Tuple[float, float]], 
+                           bowl_color: Tuple, bowl_stroke: Tuple) -> pygame.Surface:
+    """Pre-renders an ultra HD bowl overlay with glass/plastic effects."""
+    scale = 3
+    surf = pygame.Surface((W * scale, H * scale), pygame.SRCALPHA)
+    
+    scaled_pts = [(p[0]*scale, p[1]*scale) for p in points]
+    
+    # Deep shadow
+    draw_smooth_path(surf, scaled_pts, (0, 0, 0, 120), 20 * scale, 4 * scale, 6 * scale)
+    # Base thick structure
+    draw_smooth_path(surf, scaled_pts, bowl_color, 16 * scale)
+    # Inner metallic highlight
+    draw_smooth_path(surf, scaled_pts, (*bowl_stroke, 220), 6 * scale, -2 * scale, -3 * scale)
+    # Sharp rim light
+    draw_smooth_path(surf, scaled_pts, (255, 255, 255, 160), 2 * scale, 0, 0)
+    
+    return pygame.transform.smoothscale(surf, (W, H))
 
 
 def draw_text_centered(surface: pygame.Surface, text: str, font: pygame.font.Font,
                        color: Tuple, cx: float, cy: float,
                        glow_color: Optional[Tuple] = None, glow_radius: int = 0):
-    """Merkezlenmiş text, opsiyonel glow."""
-    if glow_color and glow_radius > 0:
-        for r in [glow_radius, glow_radius // 2]:
-            glow_surf = font.render(text, True, glow_color)
-            glow_rect = glow_surf.get_rect(center=(int(cx), int(cy)))
-            # Simple glow: draw slightly offset copies
-            for dx, dy in [(-r//2, 0), (r//2, 0), (0, -r//2), (0, r//2), (0, 0)]:
-                surface.blit(glow_surf, (glow_rect.x + dx, glow_rect.y + dy))
-
+    """Merkezlenmiş text, HD pürüzsüz opsiyonel glow."""
     txt_surf = font.render(text, True, color)
     txt_rect = txt_surf.get_rect(center=(int(cx), int(cy)))
+    
+    if glow_color and glow_radius > 0:
+        # Create a slightly larger surface for the glow
+        glow_size = (txt_rect.width + glow_radius * 4, txt_rect.height + glow_radius * 4)
+        g_surf = pygame.Surface(glow_size, pygame.SRCALPHA)
+        base_g = font.render(text, True, glow_color)
+        
+        # Soft blur simulation via multiple overlapping offsets
+        for dx in range(-glow_radius, glow_radius + 1, 2):
+            for dy in range(-glow_radius, glow_radius + 1, 2):
+                dist = (dx**2 + dy**2)**0.5
+                if dist <= glow_radius:
+                    alpha = max(0, int(255 * (1 - dist / glow_radius) * 0.12))
+                    temp = base_g.copy()
+                    temp.set_alpha(alpha)
+                    g_surf.blit(temp, (glow_radius * 2 + dx, glow_radius * 2 + dy))
+        
+        g_rect = g_surf.get_rect(center=(int(cx), int(cy)))
+        surface.blit(g_surf, g_rect)
+
     surface.blit(txt_surf, txt_rect)
 
 
@@ -368,9 +439,8 @@ def compute_drop_schedule(total_balls: int, target_duration: float, fps: int) ->
     Toplam süre target_duration saniyeyi geçmez.
     """
     # Accelerating schedule: drop time = k * i^alpha
-    # Solve for k so that last drop is at target_duration * 0.85
-    # (kalan %15 final reveal için)
-    drop_end = target_duration * 0.85
+    # Son 4 saniye final reveal için kalsın (çok kısa videolarda en fazla %50'si)
+    drop_end = max(target_duration - 4.0, target_duration * 0.5)
     total_frames_drop = int(drop_end * fps)
 
     if total_balls <= 1:
@@ -414,8 +484,11 @@ def render_video(cfg: dict):
 
     # Total frames
     total_frames = int(target_duration * FPS)
-    reveal_start_frame = int(target_duration * 0.87 * FPS)
-    reveal_duration = int(target_duration * 0.13 * FPS)
+    
+    # Reveal starts 3.5 seconds before the end
+    reveal_start_sec = max(target_duration - 3.5, target_duration * 0.5)
+    reveal_start_frame = int(reveal_start_sec * FPS)
+    reveal_duration = total_frames - reveal_start_frame
 
     print(f"\n{'='*55}")
     print(f"  Drop Counter Renderer")
@@ -510,6 +583,10 @@ def render_video(cfg: dict):
     space.on_collision(1, 2, post_solve=on_collision)
     space.on_collision(1, 1, post_solve=on_collision)
 
+    # ── Precompute HD Bowl Overlay ──
+    print("  Pre-rendering HD Bowl Overlay...")
+    bowl_overlay_surf = create_hd_bowl_overlay(W, H, bowl_points, metric["bowl_color"], metric["bowl_stroke"])
+
     # ── Background gradient (precompute) ──
     bg = pygame.Surface((W, H))
     for y in range(H):
@@ -586,20 +663,12 @@ def render_video(cfg: dict):
         for body, shape in ball_bodies:
             x, y = body.position
             if -50 < x < W + 50 and -50 < y < H + 200:
-                ix, iy, ir = int(x), int(y), int(shape.radius)
-                pygame.gfxdraw.filled_circle(surface, ix, iy, ir, shape.color_rgb)
-                pygame.gfxdraw.aacircle(surface, ix, iy, ir, shape.color_rgb)
-                
-                # Subtle highlight
-                hi_r = max(int(shape.radius * 0.4), 1)
-                hi_x = int(x - shape.radius * 0.25)
-                hi_y = int(y - shape.radius * 0.25)
-                hi_color = tuple(min(255, c + 60) for c in shape.color_rgb)
-                pygame.gfxdraw.filled_circle(surface, hi_x, hi_y, hi_r, hi_color)
-                pygame.gfxdraw.aacircle(surface, hi_x, hi_y, hi_r, hi_color)
+                # Use HD ball sprite centered at (x, y)
+                ball_surf = get_hd_ball_sprite(shape.radius, shape.color_rgb)
+                surface.blit(ball_surf, (int(x - shape.radius), int(y - shape.radius)))
 
         # Bowl overlay
-        draw_bowl(surface, bowl_points, metric["bowl_color"], metric["bowl_stroke"])
+        surface.blit(bowl_overlay_surf, (0, 0))
 
         # ── HUD ──
         accent = metric["accent"]
@@ -641,12 +710,15 @@ def render_video(cfg: dict):
 
             overlay = pygame.Surface((W, H), pygame.SRCALPHA)
 
+            # Empty space between top text and bowl
+            reveal_cy = int(H * 0.38)
+
             # Radial glow background
             for r_size in [W * 0.7, W * 0.5, W * 0.3]:
                 pygame.draw.circle(
                     overlay,
                     (*accent, int(15 * opacity)),
-                    (cx, H // 2),
+                    (cx, reveal_cy),
                     int(r_size)
                 )
 
@@ -661,7 +733,7 @@ def render_video(cfg: dict):
                     rf = pygame.font.Font(None, reveal_font_size)
 
                 rev_surf = rf.render(f"{total_balls:,}", True, accent)
-                rev_rect = rev_surf.get_rect(center=(cx, H // 2))
+                rev_rect = rev_surf.get_rect(center=(cx, reveal_cy))
 
                 # Glow layers
                 for glow_r in [3, 2, 1]:
@@ -679,7 +751,7 @@ def render_video(cfg: dict):
                 surface.blit(final_surf, rev_rect)
 
                 # Label below number
-                label_y = H // 2 + int(reveal_font_size * 0.65)
+                label_y = reveal_cy + int(reveal_font_size * 0.65)
                 label_surf = font_reveal_label.render(
                     metric["label"].upper(), True, (200, 200, 200)
                 )
