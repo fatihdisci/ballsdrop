@@ -587,6 +587,29 @@ def render_video(cfg: dict):
     print("  Pre-rendering HD Bowl Overlay...")
     bowl_overlay_surf = create_hd_bowl_overlay(W, H, bowl_points, metric["bowl_color"], metric["bowl_stroke"])
 
+    # ── Pre-render radial glow for reveal (once, reuse every frame) ──
+    print("  Pre-rendering Reveal Glow...")
+    reveal_cy = int(H * 0.30)
+    glow_max_r = int(W * 0.7)
+    glow_diam = glow_max_r * 2
+    _glow_base = pygame.Surface((glow_diam, glow_diam), pygame.SRCALPHA)
+    glow_center = glow_max_r
+    num_steps = max(glow_max_r // 2, 60)
+    for i in range(num_steps, 0, -1):
+        t_g = i / num_steps
+        r_px = int(t_g * glow_max_r)
+        if r_px < 1:
+            continue
+        alpha_raw = math.exp(-3.0 * t_g * t_g) * 35
+        alpha_val = max(0, min(255, int(alpha_raw)))
+        if alpha_val < 1:
+            continue
+        pygame.gfxdraw.filled_circle(
+            _glow_base, glow_center, glow_center, r_px,
+            (accent[0], accent[1], accent[2], alpha_val)
+        )
+    _glow_rect = _glow_base.get_rect(center=(W // 2, reveal_cy))
+
     # ── Background gradient (precompute) ──
     bg = pygame.Surface((W, H))
     for y in range(H):
@@ -708,21 +731,10 @@ def render_video(cfg: dict):
             ease = 1 + 2.7 * (t_reveal - 1) ** 3 + 1.7 * (t_reveal - 1) ** 2
             opacity = min(t_reveal / 0.4, 1.0)
 
-            overlay = pygame.Surface((W, H), pygame.SRCALPHA)
-
-            # Empty space between top text and bowl
-            reveal_cy = int(H * 0.38)
-
-            # Radial glow background
-            for r_size in [W * 0.7, W * 0.5, W * 0.3]:
-                pygame.draw.circle(
-                    overlay,
-                    (*accent, int(15 * opacity)),
-                    (cx, reveal_cy),
-                    int(r_size)
-                )
-
-            surface.blit(overlay, (0, 0))
+            # Blit pre-rendered glow with current opacity
+            glow_copy = _glow_base.copy()
+            glow_copy.set_alpha(int(255 * opacity))
+            surface.blit(glow_copy, _glow_rect)
 
             # Big number
             reveal_font_size = int(H * 0.13 * ease)
@@ -796,11 +808,12 @@ def render_video(cfg: dict):
         "-i", str(frames_dir / "frame_%07d.png"),
         "-i", audio_path,
         "-c:v", "h264_nvenc",
-        "-preset", "p6",
-        "-cq", "18",
+        "-preset", "p7",
+        "-cq", "16",
+        "-b:v", "8M",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        "-b:a", "192k",
+        "-b:a", "256k",
         "-shortest",
         "-movflags", "+faststart",
         output_path
@@ -815,11 +828,11 @@ def render_video(cfg: dict):
             "-i", str(frames_dir / "frame_%07d.png"),
             "-i", audio_path,
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "18",
+            "-preset", "medium",
+            "-crf", "16",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
-            "-b:a", "192k",
+            "-b:a", "256k",
             "-shortest",
             "-movflags", "+faststart",
             output_path
@@ -834,8 +847,8 @@ def render_video(cfg: dict):
             "-framerate", str(FPS),
             "-i", str(frames_dir / "frame_%07d.png"),
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "18",
+            "-preset", "medium",
+            "-crf", "16",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             output_path
